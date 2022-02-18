@@ -38,7 +38,7 @@ Class clzz =xxx.getClass();clazz存在堆中不在方法区；
 -XX:MaxMetaspaceSize
 
 #### 堆外内存 ####
-默认和堆大小一样，参数配置是XX:MaxDirectMemorySize，首先打开堆外内存跟踪，-XX:NativeMemoryTracking=detail，执行jcmp命令，jcmd pid VM.native_memory detail scale=MB > temp.txt  ；linux的pmap 查看进程内存地址空间，结合刚才的地址找出对应的线程
+默认和堆大小一样，参数配置是XX:MaxDirectMemorySize，首先打开堆外内存跟踪，-XX:NativeMemoryTracking=detail，执行jcmp命令，jcmd pid VM.native_memory detail scale=MB > temp.txt  ；linux的pmap 查看进程内存地址空间，结合刚才的地址找出对应的线程；或者使用google-perftools
 
 #### 配置 ####
 首先进行估算；估算每秒生成多大的对象，持续多少秒之后新生代发生GC。（大小*频率*时间）合理安排大小，避免频繁GC；然后上测试环境，模拟压力测试，稳定性正常；一般情况是4核8G 并发500；

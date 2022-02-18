@@ -136,4 +136,149 @@ jdk7推出,jdk9官方推荐;关注点:暂停时间;针对多核大内存的机�
 
 
 #### ZGC ####
-jdk11推出,关注低延迟;停顿时间不超过10ms;最大16T;吞吐降低不超过15%. -XX:+UseZGC;在G1基础上.暂时不实现分代。不同的是使用读屏障,颜色指针实现可并发的标记-整理算法.将region划分小,中,大的容量。之前的GC信息保存在对象头,但ZGC保存在指针中.64位指针,低44位用于寻址,高位用于业务。还有一个比较厉害厉害消除统一内存访问架构
+jdk11推出,关注低延迟;停顿时间不超过10ms;最大16T;吞吐降低不超过15%. -XX:+UseZGC;在G1基础上.暂时不实现分代。不同的是使用读屏障,颜色指针实现可并发的标记-整理算法.将region划分小,中,大的容量。之前的GC信息保存在对象头,但ZGC保存在指针中.64位指针,低44位用于寻址,高位用于业务。还有一个比较厉害厉害消除统一内存访问架构.所有cpu对同一块内存访问,导致资源争抢.每个cpu绑定一块内存,且这块内存离这个cpu最近;自动感知并利用numa架构
+
+执行流程：
+并发标记：GC的标志在指针上,标记阶段会更新颜色指针;只有在mark start和mark end存在短暂的暂停；
+并发预备重分配：计算region回收的效益
+并发重分配：把存活对象复制到新region,使用读屏障把新的地址写到转发表中.下次读的时候,通过转发表获取新的地址
+并发重映射：把原来旧对象的引用地址更新成新的地址
+
+#### 日志demo ####
+
+    0.137: [GC (Allocation Failure) 0.165: [ParNew: 3579K->512K(4608K), 0.0362486 secs] 3579K->1653K(9728K), 0.0644162 secs] [Times: user=0.03 sys=0.00, real=0.06 secs]
+    
+    0.137 发生时间: [GC (Allocation Failure GC原因) 0.165： 
+	[ParNew: 3579K GC前->512K GC后(4608K 总大小), 0.0362486 secs 花费时间] 
+    3579K GC前->1653K GC后(9728K整堆), 0.0644162 secs] [Times: user=0.03 sys=0.00, real=0.06 secs] 
+
+[ParNew:  GC前->GC后( 总大小),  花费时间] GC前-> GC后(整堆)
+
+    [CMS:8194K->6836K(10240K), 0.0049920 secs] 11356K->6836K(19456K), [Metaspace: 2776K->2776K(1056768K)], 0.0106074 secs]
+    [CMS:GC前K->GC后K(10240K), 0.0049920 secs] 11356K->6836K(19456K), [Metaspace: 2776K->2776K(1056768K)], 0.0106074 secs]
+
+#### 工具 ####
+工具1：jstat
+
+jstat查看运行情况，包括新生代老年代使用了多少内存，GC的次数等。使用该工具，可以查看每秒新增多少内存，对发生GC时间的一个预估，然后配置多少内存。可以按照内存篇的大小*频率*时间计算出多少时间后发生GC。
+
+    jstat -gc PID
+C表示容量,U已使用,T时间
+
+- S0C：这是From Survivor区的大小
+- S1C：这是To Survivor区的大小
+- S0U：这是From Survivor区当前使用的内存大小
+- S1U：这是To Survivor区当前使用的内存大小
+- EC：这是Eden区的大小
+- EU：这是Eden区当前使用的内存大小
+- OC：这是老年代的大小
+- OU：这是老年代当前使用的内存大小
+- MC：这是方法区（永久代、元数据区）的大小
+- MU：这是方法区（永久代、元数据区）的当前使用的内存大小
+- YGC：这是系统运行迄今为止的Young GC次数
+- YGCT：这是Young GC的耗时
+- FGC：这是系统运行迄今为止的Full GC次数
+- FGCT：这是Full GC的耗时
+- GCT：这是所有GC的总耗时
+
+    jstat -gc PID 1000 10
+
+每秒执行一次，10次 ,看到新生代每秒增长多少，推算多久一次minorGC，minorGC总耗时/次数=评价耗时；如果想查看回收情况：
+根据上面算得的增加，计算多久（9秒）一次GC
+调整收集时间jstat -gc PID 9000 10。
+更直接看GC日志
+
+
+工具2：jstack查看线程，可以排查cpu飙升和死锁。
+使用top -Hp pid查看当前的线程，按大写的P进行排序，然后把线程的pid转换成16进制，然后使用jstack 进程 | grep 0x60a -C5，查看里面的信息，包含了类的方法名。
+
+
+工具3：jmap查看对象分布，官方建议用jcmd命令代替jmap
+
+jmap -heap PID （新生代，老年代，S0，S1）多大，用了多少，剩余多少
+jmap -histo PID 对象占用内存空间的大小降序排列
+jmap -dump:live,format=b,file=dump.hprof PID 导出快照。
+使用eclipse的MAT分析内存分布，可以排查内存飙升
+
+如果是排查堆外内存，使用jcmd,查看内存篇的堆外内存；打开堆外内存跟踪，-XX:NativeMemoryTracking=detail，执行jcmp命令，jcmd pid VM.native_memory detail scale=MB > temp.txt 
+或者使用google-perftools；
+
+
+工具4：jinfo查看配置信息。更改配置之后查看是否生效
+jinfo -flags pid 查看jvm参数
+jinfo -sysprops pid 系统参数
+
+
+打印GC
+-XX:+PrintGCDetils：打印详细的gc日志 
+-XX:+PrintGCTimeStamps：打印GC发生时间 
+-Xloggc:gc.log：gc日志写入磁盘文件
+-XX:GCLogFileSize=100M
+-XX:+HeapDumpOnOutOfMemoryError  
+-XX:HeapDumpPath=/usr/local/app/oom
+
+监控
+监控open-faIcon（小米）
+zabbix（zabbix-java-gateway）
+调优工具Arthas(阿里)
+
+自研监控（MXBean）
+java.lang.management.ManagementFactory
+
+
+#### 优化 ####
+优化的前提必须明确目标；性能指标（CPU,IO，内存，吞吐量，响应时间等），survivor能保存幸存者。尽量减少FullGC。
+
+从性能维度关注延迟/抖动，吞吐量/TPS和系统容量，
+性能的指标分为业务指标和资源（硬件）约束指标。
+业务指标是指吞吐量,响应时间,并发数,业务成功数。
+资源（硬件）约束指标是CPU，内存和IO
+
+1CPU
+CPU可以通过top命令或者其他工具查看，比如vmstat ；
+vmstat 1
+
+- us：用户占用CPU的百分比
+- sy：系统(内核和中断)占用CPU的百分比
+- id：CPU空闲的百分比
+- r： 可运行进程数，包括正在运行(Running)和已就绪等待运行(Waiting)的进程
+- b:睡眠的线程
+- cs：每秒上下文切换次数
+
+top命令
+Load Average 1,5,15分钟的平均负载
+
+lscpu
+查看cpu个数
+CPU的指标使用率通常用us + sy来计算，其可接受上限通常在70%~80%。
+
+sy的值长期大于25%，应该关注in(系统中断)和cs(上下文切换)的数值
+
+r的值等于系统CPU总核数，则说明CPU已经满负荷。在负载测试中，其可接受上限通常不超过CPU核数的2倍
+
+2内存
+vmstat 1
+free：可用内存
+si：每秒从SWAP读取到内存的数据大小
+so：每秒从内存写入到SWAP的数据大小
+指标：free可接受的范围通常应该大于物理内存的20%
+
+3IO
+iostat -dxk 1
+r/s和w/s:每秒读写
+rkB/s和wkB/s:每秒读/写的数据大小
+
+iptraf -d eth0
+
+指标
+机械硬盘IOPS随机存储一般在100左右；SSD型号不一样差别很大，几千到几万之间
+（Input/Output Operations Per Second）每秒读写次数
+
+
+生产的标准
+4核8G；压力测试QPS不能低于3万，数据库负载不能超过50%，服务器负载不能超过70%, 单次请求时长不能超过70ms，错误率不能超过5%；
+
+一个4核8G内存的服务器，最大线程数800较为合适，最小工作线程数为100较为合适
+
+#### 调优案例： ####
+日请求上亿：
